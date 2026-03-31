@@ -10,10 +10,11 @@ DB_USER = "if0_41314838"
 DB_PASS = "Velux454577"
 DB_NAME = "if0_41314838_zynera"
 
-AGENT_FILE = "ZyneraAgent.exe"  # met le .exe dans le repo pour simplifier
+AGENT_FILE = "ZyneraAgent.exe"  # place le .exe dans le repo
 
 # ---------------- UTILITAIRES ----------------
 def get_connection():
+    """Crée une connexion MySQL"""
     return pymysql.connect(
         host=DB_HOST,
         user=DB_USER,
@@ -23,6 +24,7 @@ def get_connection():
     )
 
 def get_session(token):
+    """Récupère la session correspondant au token"""
     conn = get_connection()
     try:
         with conn.cursor() as cursor:
@@ -33,6 +35,7 @@ def get_session(token):
         conn.close()
 
 def delete_session(session_id):
+    """Supprime le token après utilisation"""
     conn = get_connection()
     try:
         with conn.cursor() as cursor:
@@ -56,6 +59,7 @@ def download_agent():
     if not os.path.exists(AGENT_FILE):
         return "Erreur : Fichier agent introuvable.", 404
 
+    # Supprime le token après usage
     delete_session(session["id"])
 
     return send_file(
@@ -66,4 +70,5 @@ def download_agent():
 
 # ---------------- RUN ----------------
 if __name__ == "__main__":
+    # Pour dev local
     app.run(host="0.0.0.0", port=5000)
