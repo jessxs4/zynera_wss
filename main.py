@@ -8,21 +8,22 @@ sio = socketio.AsyncServer(
     cors_allowed_origins="*",
     async_mode="asgi",
     ping_timeout=60,
-    ping_interval=25
+    ping_interval=25,
+    logger=True,           # ← Ajouté pour debug
+    engineio_logger=True   # ← Ajouté pour debug
 )
 
 app = FastAPI()
-sio_app = socketio.ASGIApp(sio, app)
+sio_app = socketio.ASGIApp(sio, app, socketio_path='/socket.io')
 
-# Stockage en mémoire (pour le moment)
-clients = {}   # token → client_sid
-staffs = {}    # token → staff_sid
+# Stockage
+clients = {}
+staffs = {}
 
-# ===================== SOCKET.IO EVENTS =====================
-
+# ===================== EVENTS =====================
 @sio.event
 async def connect(sid, environ):
-    print(f"[+] Connexion : {sid}")
+    print(f"[+] Connexion SID: {sid}")
 
 @sio.event
 async def join(sid, data):
@@ -41,30 +42,25 @@ async def join(sid, data):
     elif role == 'staff':
         staffs[token] = sid
         print(f"[STAFF] Connecté → Token: {token}")
-        
-        # Si le client est déjà connecté → on prévient le staff
         if token in clients:
-            await sio.emit('session_ready', {'status': 'ok', 'message': 'Client connecté'}, to=sid)
+            await sio.emit('session_ready', {'status': 'ok'}, to=sid)
         else:
             await sio.emit('waiting_client', {'message': 'En attente du client...'}, to=sid)
 
 @sio.event
 async def screen_frame(sid, data):
-    """Reçoit l'écran du client et le renvoie au staff"""
     token = data.get('token')
     if token in staffs:
         await sio.emit('screen_update', data, to=staffs[token])
 
 @sio.event
 async def mouse_event(sid, data):
-    """Staff → Client : contrôle souris"""
     token = data.get('token')
     if token in clients:
         await sio.emit('control_mouse', data, to=clients[token])
 
 @sio.event
 async def keyboard_event(sid, data):
-    """Staff → Client : contrôle clavier"""
     token = data.get('token')
     if token in clients:
         await sio.emit('control_keyboard', data, to=clients[token])
@@ -74,22 +70,18 @@ async def leave(sid, data):
     token = data.get('token')
     clients.pop(token, None)
     staffs.pop(token, None)
-    print(f"[-] Déconnexion token : {token}")
 
-# ===================== HEALTH CHECK (important pour Railway) =====================
+# ===================== ROUTES =====================
 @app.get("/health")
 async def health():
-    return {
-        "status": "ok",
-        "active_sessions": len(clients),
-        "staff_connected": len(staffs)
-    }
+    return {"status": "ok", "clients": len(clients), "staffs": len(staffs)}
 
 @app.get("/")
 async def root():
-    return {"message": "Zynera WebSocket Server is running 🚀"}
+    return {"message": "Zynera Socket.IO Server is running 🚀"}
 
 # ===================== LANCEMENT =====================
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.environ.get("PORT", 8080))
+    print(f"🚀 Serveur démarré sur le port {port}")
     uvicorn.run(sio_app, host="0.0.0.0", port=port)
