@@ -1,2 +1,7 @@
-Flask==2.3.3
-PyMySQL==1.1.0
+fastapi
+uvicorn[standard]
+python-socketio
+python-socketio[client]
+mss
+pillow
+pyautogui
