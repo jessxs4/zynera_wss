@@ -1,85 +1,69 @@
-import asyncio
-import websockets
-import ssl
-import json
-from collections import defaultdict
+from flask import Flask, request, send_file
+import pymysql
+import os
 
-# ==================== CONFIGURATION ====================
-HOST = "0.0.0.0"          # Écoute sur toutes les interfaces
-PORT = 443                # Port HTTPS/WSS standard
-CERT_PATH = "/etc/letsencrypt/live/zynera.fr/fullchain.pem"
-KEY_PATH = "/etc/letsencrypt/live/zynera.fr/privkey.pem"
+app = Flask(__name__)
 
-# ==================== SSL ====================
-ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-ssl_context.load_cert_chain(certfile=CERT_PATH, keyfile=KEY_PATH)
+# ---------------- CONFIG ----------------
+DB_HOST = "sql100.infinityfree.com"
+DB_USER = "if0_41314838"
+DB_PASS = "Velux454577"
+DB_NAME = "if0_41314838_zynera"
 
-# ==================== GESTION DES CONNEXIONS ====================
-# Format: {client_id: websocket}
-clients = {}
-staff = {}
+AGENT_FILE = "ZyneraAgent.exe"  # met le .exe dans le repo pour simplifier
 
-# Pour bufferiser les commandes si le client n'est pas encore connecté
-pending_commands = defaultdict(list)
+# ---------------- UTILITAIRES ----------------
+def get_connection():
+    return pymysql.connect(
+        host=DB_HOST,
+        user=DB_USER,
+        password=DB_PASS,
+        database=DB_NAME,
+        cursorclass=pymysql.cursors.DictCursor
+    )
 
-# ==================== HANDLER ====================
-async def handler(ws, path):
+def get_session(token):
+    conn = get_connection()
     try:
-        # Première chose : identification
-        msg = await ws.recv()
-        data = json.loads(msg)
-        role = data.get("role")
-        user_id = str(data.get("id"))
-
-        if role == "client":
-            clients[user_id] = ws
-            print(f"[+] Client connecté : {user_id}")
-            # Envoyer les commandes en attente
-            for cmd in pending_commands[user_id]:
-                await ws.send(json.dumps(cmd))
-            pending_commands[user_id].clear()
-        elif role == "staff":
-            staff[user_id] = ws
-            print(f"[+] Staff connecté : {user_id}")
-        else:
-            await ws.close()
-            return
-
-        # ==================== LOOP PRINCIPALE ====================
-        async for message in ws:
-            try:
-                data = json.loads(message)
-                target_id = str(data.get("target_id"))
-                # Si staff envoie à client
-                if role == "staff" and target_id in clients:
-                    await clients[target_id].send(json.dumps(data))
-                # Si client envoie à staff
-                elif role == "client" and target_id in staff:
-                    await staff[target_id].send(json.dumps(data))
-                # Si client pas connecté : bufferiser
-                elif role == "staff":
-                    pending_commands[target_id].append(data)
-            except Exception as e:
-                print(f"Erreur traitement message : {e}")
-
-    except websockets.ConnectionClosed:
-        pass
+        with conn.cursor() as cursor:
+            sql = "SELECT * FROM remote_sessions WHERE token=%s AND expires_at >= NOW()"
+            cursor.execute(sql, (token,))
+            return cursor.fetchone()
     finally:
-        # Nettoyage
-        if role == "client":
-            if user_id in clients:
-                del clients[user_id]
-                print(f"[-] Client déconnecté : {user_id}")
-        elif role == "staff":
-            if user_id in staff:
-                del staff[user_id]
-                print(f"[-] Staff déconnecté : {user_id}")
+        conn.close()
 
-# ==================== LANCEMENT DU SERVEUR ====================
-async def main():
-    async with websockets.serve(handler, HOST, PORT, ssl=ssl_context):
-        print(f"[+] WSS Server démarré sur wss://zynera.fr:{PORT}")
-        await asyncio.Future()  # Run forever
+def delete_session(session_id):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = "DELETE FROM remote_sessions WHERE id=%s"
+            cursor.execute(sql, (session_id,))
+        conn.commit()
+    finally:
+        conn.close()
 
+# ---------------- ENDPOINT ----------------
+@app.route("/download", methods=["GET"])
+def download_agent():
+    token = request.args.get("token")
+    if not token:
+        return "Erreur : Token manquant.", 400
+
+    session = get_session(token)
+    if not session:
+        return "Erreur : Token invalide ou expiré.", 403
+
+    if not os.path.exists(AGENT_FILE):
+        return "Erreur : Fichier agent introuvable.", 404
+
+    delete_session(session["id"])
+
+    return send_file(
+        AGENT_FILE,
+        as_attachment=True,
+        download_name="ZyneraAgent.exe"
+    )
+
+# ---------------- RUN ----------------
 if __name__ == "__main__":
-    asyncio.run(main())
+    app.run(host="0.0.0.0", port=5000)
