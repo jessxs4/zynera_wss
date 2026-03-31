@@ -1,74 +1,61 @@
-from flask import Flask, request, send_file
-import pymysql
-import os
+from fastapi import FastAPI
+import socketio
+import uvicorn
+import base64
+from PIL import Image
+import io
 
-app = Flask(__name__)
+sio = socketio.AsyncServer(cors_allowed_origins="*", async_mode='asgi')
+app = FastAPI()
+sio_app = socketio.ASGIApp(sio, app)
 
-# ---------------- CONFIG ----------------
-DB_HOST = "sql100.infinityfree.com"
-DB_USER = "if0_41314838"
-DB_PASS = "Velux454577"
-DB_NAME = "if0_41314838_zynera"
+clients = {}   # token → client_sid
+staffs = {}    # token → staff_sid
 
-AGENT_FILE = "ZyneraAgent.exe"  # place le .exe dans le repo
+@sio.event
+async def connect(sid, environ):
+    print(f"Connecté: {sid}")
 
-# ---------------- UTILITAIRES ----------------
-def get_connection():
-    """Crée une connexion MySQL"""
-    return pymysql.connect(
-        host=DB_HOST,
-        user=DB_USER,
-        password=DB_PASS,
-        database=DB_NAME,
-        cursorclass=pymysql.cursors.DictCursor
-    )
+@sio.event
+async def join(sid, data):
+    token = data['token']
+    role = data['role']
+    
+    if role == 'client':
+        clients[token] = sid
+        await sio.emit('client_joined', {'status': 'ok'}, to=sid)
+        print(f"Client connecté pour token {token}")
+    elif role == 'staff':
+        staffs[token] = sid
+        print(f"Staff connecté pour token {token}")
 
-def get_session(token):
-    """Récupère la session correspondant au token"""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cursor:
-            sql = "SELECT * FROM remote_sessions WHERE token=%s AND expires_at >= NOW()"
-            cursor.execute(sql, (token,))
-            return cursor.fetchone()
-    finally:
-        conn.close()
+    # Si les deux sont là → on peut démarrer
+    if token in clients and token in staffs:
+        await sio.emit('session_ready', {}, to=staffs[token])
 
-def delete_session(session_id):
-    """Supprime le token après utilisation"""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cursor:
-            sql = "DELETE FROM remote_sessions WHERE id=%s"
-            cursor.execute(sql, (session_id,))
-        conn.commit()
-    finally:
-        conn.close()
+@sio.event
+async def screen_frame(sid, data):
+    token = data['token']
+    if token in staffs:
+        await sio.emit('screen_update', data, to=staffs[token])
 
-# ---------------- ENDPOINT ----------------
-@app.route("/download", methods=["GET"])
-def download_agent():
-    token = request.args.get("token")
-    if not token:
-        return "Erreur : Token manquant.", 400
+@sio.event
+async def mouse_event(sid, data):
+    token = data['token']
+    if token in clients:
+        await sio.emit('control_mouse', data, to=clients[token])
 
-    session = get_session(token)
-    if not session:
-        return "Erreur : Token invalide ou expiré.", 403
+@sio.event
+async def keyboard_event(sid, data):
+    token = data['token']
+    if token in clients:
+        await sio.emit('control_keyboard', data, to=clients[token])
 
-    if not os.path.exists(AGENT_FILE):
-        return "Erreur : Fichier agent introuvable.", 404
+@sio.event
+async def leave(sid, data):
+    token = data.get('token')
+    clients.pop(token, None)
+    staffs.pop(token, None)
 
-    # Supprime le token après usage
-    delete_session(session["id"])
-
-    return send_file(
-        AGENT_FILE,
-        as_attachment=True,
-        download_name="ZyneraAgent.exe"
-    )
-
-# ---------------- RUN ----------------
 if __name__ == "__main__":
-    # Pour dev local
-    app.run(host="0.0.0.0", port=5000)
+    uvicorn.run(sio_app, host="0.0.0.0", port=8000)
